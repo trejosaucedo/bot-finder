@@ -10,7 +10,9 @@
     "start": "node build/bin/server.js",
     "migrate": "node build/bin/console.js migration:run --force"
   },
-  "engines": { "node": ">=20 <23" },
+  "engines": {
+    "node": ">=20 <23"
+  },
   "imports": {
     "#controllers/*": "./app/controllers/*.js",
     "#exceptions/*": "./app/exceptions/*.js",
