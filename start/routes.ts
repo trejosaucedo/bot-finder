@@ -1,9 +1,11 @@
 import router from '@adonisjs/core/services/router'
-const PlotsController = () => import('#controllers/plots_controller')
 
-router.post('/plots/ingest', [PlotsController, 'ingest'])
-router.get('/plots/filter', [PlotsController, 'filter'])
-router.get('/plots/latest', [PlotsController, 'latest'])
-router.get('/servers', [PlotsController, 'servers'])
-router.get('/', async () => ({ ok: true, service: 'bot-brainrot', time: new Date().toISOString() }))
+// Import dinámico del controlador
+const ServersController = () => import('#controllers/servers_controller')
+
+// Rutas base
+router.get('/', async () => ({ ok: true, service: 'scrapper', time: new Date().toISOString() }))
 router.get('/health', async () => ({ ok: true }))
+
+// Nueva ruta de servidores
+router.get('/servers', [ServersController, 'servers'])
