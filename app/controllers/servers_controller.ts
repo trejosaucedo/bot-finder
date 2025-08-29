@@ -2,8 +2,9 @@ import type { HttpContext } from '@adonisjs/core/http'
 import axios from 'axios'
 
 export default class ServersController {
-  public async servers({ response }: HttpContext) {
+  public async servers({ request, response }: HttpContext) {
     try {
+      const order = request.input('order', 'Asc')
       const placeId = 109983668079237
       const limit = 100
       const pagesToFetch = 3
@@ -20,7 +21,7 @@ export default class ServersController {
           {
             params: {
               cursor,
-              sortOrder: 'Desc',
+              sortOrder: order,
               excludeFullGames: true,
               limit,
             },
