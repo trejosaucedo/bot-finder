@@ -6,7 +6,7 @@ export default class ServersController {
     try {
       const order = request.input('order', 'Asc')
       const placeId = 109983668079237
-      const limit = 100
+      const limit = 25
       const pagesToFetch = 1
 
       let cursor: string | null = ''
