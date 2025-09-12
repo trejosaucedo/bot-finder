@@ -33,7 +33,7 @@ export default class ServersController {
         if (status < 200 || status >= 300) {
           return response.status(status).json({
             ok: false,
-            error: 'roblox_api_error',
+            error: 'roblox_api_errorr',
             page: i + 1,
           })
         }
