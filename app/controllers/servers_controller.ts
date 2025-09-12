@@ -7,7 +7,7 @@ export default class ServersController {
       const order = request.input('order', 'Asc')
       const placeId = 109983668079237
       const limit = 100
-      const pagesToFetch = 3
+      const pagesToFetch = 1
 
       let cursor: string | null = ''
       let allServers: any[] = []
