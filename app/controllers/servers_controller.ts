@@ -7,9 +7,9 @@ export default class ServersController {
   public async servers({ request, response }: HttpContext) {
     const order = request.input('order', 'Asc') // 'Asc' | 'Desc' (funciona en Roblox)
     const placeId = 109983668079237
-    const limit = Number(request.input('limit', 50)) // 10|25|50|100
+    const limit = Number(request.input('limit', 100)) // 10|25|50|100
     const pagesToFetch = Number(request.input('pages', 3)) // hasta 3
-    const excludeFullGames = request.input('excludeFullGames', true) ? true : false
+    const excludeFullGames = !!request.input('excludeFullGames', true)
 
     let cursor: string | null = null
     const allServers: any[] = []
