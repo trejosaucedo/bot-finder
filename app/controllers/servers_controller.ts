@@ -1,164 +1,138 @@
 import type { HttpContext } from '@adonisjs/core/http'
 import axios, { AxiosResponse } from 'axios'
 
-/** === Config dura (sin env) === */
-const LIMIT = 100
-const PAGES = 3
-const DEBUG_WEBHOOK = 'https://webhook.site/d6b964c2-ce29-495c-8f91-d2eb4e8547c4'
-
-// Ritmo mínimo entre requests a Roblox (ms)
-const REQ_MIN_INTERVAL_MS = 1200
-// Pausa fija entre skips (ms)
-const SKIP_DELAY_MS = 500
-// Pausa fija cuando “rellenas” dentro de una página lógica (ms)
-const WITHIN_PAGE_DELAY_MS = 500
-// Pausa fija entre páginas lógicas (ms)
-const BETWEEN_PAGES_DELAY_MS = 700
-// Reintentos máximos por request (incluye 429/5xx)
-const MAX_RETRIES = 10
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-
-async function postDebug(payload: any) {
-  try {
-    await axios.post(DEBUG_WEBHOOK, payload, { timeout: 4000, validateStatus: () => true })
-  } catch {}
-}
-
-async function waitRetryAfter(resp: AxiosResponse) {
-  const ra = resp.headers?.['retry-after']
-  if (ra) {
-    const secs = Number(ra)
-    if (Number.isFinite(secs) && secs > 0) { await sleep(secs * 1000); return }
-    const dateMs = Date.parse(String(ra))
-    if (!Number.isNaN(dateMs)) {
-      const ms = dateMs - Date.now()
-      if (ms > 0) { await sleep(ms); return }
-    }
-  }
-  await sleep(REQ_MIN_INTERVAL_MS) // fallback
-}
 
 export default class ServersController {
   public async servers({ request, response }: HttpContext) {
-    const placeId = Number(request.input('placeId', 109983668079237))
+    const order = request.input('order', 'Asc') // 'Asc' | 'Desc' (funciona en Roblox)
+    const placeId = 109983668079237
+    const limit = Number(request.input('limit', 50)) // 10|25|50|100
+    const pagesToFetch = Number(request.input('pages', 3)) // hasta 3
     const excludeFullGames = !!request.input('excludeFullGames', true)
-    const order: 'Asc' | 'Desc' =
-      String(request.input('order', 'Asc')).toLowerCase() === 'desc' ? 'Desc' : 'Asc'
-    const skipPages = Math.max(0, Number(request.input('skip', 0)) || 0)
 
     let cursor: string | null = null
-    let lastReqAt = 0
-    const ids: string[] = []
+    const allServers: any[] = []
 
-    const ensureMinInterval = async () => {
-      const now = Date.now()
-      const elapsed = now - lastReqAt
-      if (elapsed < REQ_MIN_INTERVAL_MS) {
-        await sleep(REQ_MIN_INTERVAL_MS - elapsed)
-      }
-      lastReqAt = Date.now()
-    }
-
-    const fetchPage = async (stage: 'skip' | 'collect', pageIdx: number): Promise<AxiosResponse> => {
+    // === helper: fetch con anti-ratelimit y propagando error real ===
+    const fetchPage = async (pageIdx: number): Promise<AxiosResponse> => {
+      const maxRetries = 3
       let attempt = 0
+
+      // Nota: no incluimos 'cursor' si es null
+      const mkParams = () => {
+        const p: any = { sortOrder: order, excludeFullGames, limit }
+        if (cursor) p.cursor = cursor
+        return p
+      }
+
+      // user-agent “normal”
+      const headers = {
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
+        'X-Page-Idx': String(pageIdx),
+      }
+
       while (true) {
         attempt++
-        await ensureMinInterval()
-
-        const params: any = { sortOrder: order, excludeFullGames, limit: LIMIT }
-        if (cursor) params.cursor = cursor
-
         const resp = await axios.get(
           `https://games.roblox.com/v1/games/${placeId}/servers/Public`,
           {
-            params,
-            headers: {
-              Accept: 'application/json',
-              'Accept-Language': 'es-MX,es;q=0.9,en-US;q=0.8',
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36',
-              Referer: `https://www.roblox.com/games/${placeId}`,
-              'X-Stage': stage,
-              'X-Page-Idx': String(pageIdx),
-              'X-Order': order,
-            },
+            params: mkParams(),
+            headers,
+            // No lances por status != 2xx; queremos el cuerpo real
             validateStatus: () => true,
-            timeout: 12000,
+            timeout: 8000,
           }
         )
 
-        await postDebug({
-          stage, pageIdx, order, placeId, status: resp.status,
-          headers: {
-            'retry-after': resp.headers?.['retry-after'] ?? null,
-            'x-rblx-challenge-id': resp.headers?.['x-rblx-challenge-id'] ?? null,
-            'x-rate-limit-remaining': resp.headers?.['x-rate-limit-remaining'] ?? null,
-          },
-          body: resp.data,
-          attempt,
-        })
-
+        // 2xx → devolver
         if (resp.status >= 200 && resp.status < 300) return resp
 
-        if ((resp.status === 429 || (resp.status >= 500 && resp.status < 600)) && attempt < MAX_RETRIES) {
-          await waitRetryAfter(resp)
+        // 429 → respetar Retry-After y reintentar (hasta maxRetries)
+        if (resp.status === 429 && attempt < maxRetries) {
+          const ra = Number(resp.headers?.['retry-after'] ?? 0)
+          const waitMs = (Number.isFinite(ra) && ra > 0 ? ra * 1000 : 800) + Math.random() * 400
+          await sleep(waitMs)
           continue
         }
+
+        // 5xx → backoff exponencial con jitter (hasta maxRetries)
+        if (resp.status >= 500 && resp.status < 600 && attempt < maxRetries) {
+          const waitMs = Math.min(2000 * attempt, 4000) + Math.random() * 300
+          await sleep(waitMs)
+          continue
+        }
+
+        // Si llegamos aquí, devolvemos tal cual (error real del upstream)
         return resp
       }
     }
 
     try {
-      // 1) SKIP: avanza ventanas sin recolectar, respetando Retry-After
-      for (let s = 0; s < skipPages; s++) {
-        const r = await fetchPage('skip', s + 1)
-        if (r.status < 200 || r.status >= 300) {
-          return response.status(r.status).json({ ok: false, stage: 'skip', pageTried: s + 1, upstream: r.data })
-        }
-        cursor = r.data?.nextPageCursor ?? null
-        if (!cursor) break
-        await sleep(SKIP_DELAY_MS)
-      }
+      for (let i = 0; i < pagesToFetch; i++) {
+        const resp = await fetchPage(i)
 
-      // 2) COLECTA: 3 páginas lógicas; “rellena” hasta 100 por página
-      for (let p = 0; p < PAGES; p++) {
-        let got = 0
-        while (got < LIMIT) {
-          const r = await fetchPage('collect', p + 1)
-          if (r.status < 200 || r.status >= 300) {
-            return response.status(r.status).json({ ok: false, stage: 'collect', pageTried: p + 1, upstream: r.data })
-          }
-
-          const arr = Array.isArray(r.data?.data) ? r.data.data : []
-          for (const s of arr) {
-            const id = String(s?.id ?? '').trim()
-            if (id) { ids.push(id); got++ }
-            if (got >= LIMIT) break
-          }
-
-          cursor = r.data?.nextPageCursor ?? null
-          if (!cursor) break
-          if (got < LIMIT) await sleep(WITHIN_PAGE_DELAY_MS)
+        // Si no es 2xx, propaga el error REAL
+        if (resp.status < 200 || resp.status >= 300) {
+          return response.status(resp.status).json({
+            ok: false,
+            page: i + 1,
+            upstream: {
+              url: resp.config?.url,
+              status: resp.status,
+              statusText: resp.statusText,
+              // algunos headers útiles para diagnosticar rate limits
+              headers: {
+                'retry-after': resp.headers?.['retry-after'] ?? null,
+                'x-rblx-challenge-id': resp.headers?.['x-rblx-challenge-id'] ?? null,
+                'x-rate-limit-remaining': resp.headers?.['x-rate-limit-remaining'] ?? null,
+              },
+              body: resp.data, // cuerpo crudo de Roblox (aquí está el “error real”)
+            },
+          })
         }
 
+        const data = resp.data
+        const arr = Array.isArray(data?.data) ? data.data : []
+        allServers.push(...arr)
+
+        cursor = data?.nextPageCursor ?? null
         if (!cursor) break
-        await sleep(BETWEEN_PAGES_DELAY_MS)
+
+        // pequeña pausa entre páginas para suavizar rate limit
+        await sleep(250 + Math.random() * 250)
       }
 
       return response.json({
         ok: true,
-        placeId, order, skipped: skipPages,
-        pages: PAGES, limit: LIMIT, count: ids.length,
-        servers: ids.map((id) => ({ id })),
+        servers: allServers.map((s) => ({
+          id: s.id,
+          playing: s.playing,
+          maxPlayers: s.maxPlayers,
+          ping: s.ping,
+        })),
       })
     } catch (err: any) {
-      const ax = err?.response
-      if (ax) {
-        await postDebug({ stage: 'exception', status: ax.status, body: ax.data })
-        return response.status(ax.status || 502).json({ ok: false, upstream: ax.data || null })
+      // Error de red/axios → propagar detalle real también
+      const axiosResp = err?.response
+      if (axiosResp) {
+        return response.status(axiosResp.status || 502).json({
+          ok: false,
+          upstream: {
+            status: axiosResp.status,
+            statusText: axiosResp.statusText,
+            headers: axiosResp.headers || null,
+            body: axiosResp.data || null,
+          },
+        })
       }
-      await postDebug({ stage: 'exception', error: err?.message || 'proxy_error' })
-      return response.status(502).json({ ok: false, error: err?.message || 'proxy_error' })
+      return response.status(502).json({
+        ok: false,
+        error: err?.code || err?.message || 'proxy_error',
+      })
     }
   }
 }
